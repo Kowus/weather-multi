@@ -46,7 +46,7 @@ const int fileLed = 48;
 
 // Create an instance of File
 File myFile;
-
+bool is_log_error = false;
 void setup() {
   uint8_t myState = HIGH;
   Serial.begin(115200);
@@ -90,16 +90,16 @@ void setup() {
   delay(100);
   while (!fona.enableGPS(true));
   Serial.println(F("GPS Enabled"));
-  if (!fona.enableNetworkTimeSync(true)){
-      Serial.println("\n\nNetwork time sync:\tfail");
-    }
-    Serial.println("Network time sync:\tenabled");
-    if (!fona.enableNTPTimeSync(true, F("pool.ntp.org"))){
-            Serial.println(F("\n\nNTP time sync:\tfail"));
-    }
-    Serial.println("NTP time sync:\tenabled");
-    delay(100);
-  
+  if (!fona.enableNetworkTimeSync(true)) {
+    Serial.println("\n\nNetwork time sync:\tfail");
+  }
+  Serial.println("Network time sync:\tenabled");
+  if (!fona.enableNTPTimeSync(true, F("pool.ntp.org"))) {
+    Serial.println(F("\n\nNTP time sync:\tfail"));
+  }
+  Serial.println("NTP time sync:\tenabled");
+  delay(100);
+
   attachInterrupt(0, rainIRQ, FALLING);
   attachInterrupt(1, wspeedIRQ, FALLING);
   previousMillis = postMillis = millis();
@@ -141,7 +141,7 @@ void loop() {
       previousMillis = currentMillis;
     }
   } else if (currentMillis - postMillis >= postInterval) {
-    char output[300] = "";
+    char output[500] = "";
     root.set<float>("light", float(lightRead) / iterations); // Light
     root.set<int>("wind_dir", dirRead / iterations); // Wind Direction
     root.set<float>("wind_spd", float(wind_speed) / iterations); // Wind Speed
@@ -156,7 +156,13 @@ void loop() {
 
     Serial.print("write_to_file:\t");
     digitalWrite(fileLed, HIGH);
-    myFile = SD.open("hive00.log", FILE_WRITE);
+    int logStatus = logData(output);
+    if (logStatus == 200 || logStatus == 204) {
+      myFile = SD.open("hive00.log", FILE_WRITE);
+    } else {
+      myFile = SD.open("hive00_error.log", FILE_WRITE);
+      is_log_error = true;
+    }
     if (myFile) {
       myFile.println(output);
       myFile.close();
@@ -165,9 +171,37 @@ void loop() {
     } else {
       Serial.println("error!");
     }
+
     //    Reset values
     lightRead = humRead = dirRead = pressRead = tempRead = iterations = thisrainin = 0;
     postMillis = currentMillis;
+  }
+  if (is_log_error) {
+    // Do Something here.. leave blank for now
+    char err_data[5000] = "";
+    String trick_data = "";
+    int logStatus;
+    myFile = SD.open("hive00_error.log");
+    if (myFile) {
+      while (myFile.available()) {
+        trick_data += myFile.read();
+      }
+      trick_data.toCharArray(err_data, 5000);
+      myFile.close();
+      logStatus = logData(err_data);
+    }
+    Serial.print("rewrite_to_file:\t");
+    myFile = SD.open("hive00.log", FILE_WRITE);
+    if (myFile) {
+      myFile.println(err_data);
+      myFile.close();
+      Serial.println("success!");
+
+    } else {
+      Serial.println("error!");
+    }
+    SD.remove("hive00_error.log");
+
   }
 
 }
@@ -255,9 +289,9 @@ float get_wind_speed() {
 
 // Interrupt Handlers
 
-void rainIRQ(){
-// Count rain gauge bucket tips as they occur
-// Activated by the magnet and reed switch in the rain gauge, attached to input D2
+void rainIRQ() {
+  // Count rain gauge bucket tips as they occur
+  // Activated by the magnet and reed switch in the rain gauge, attached to input D2
 
   volatile unsigned long raintime = millis(); // grab current time
   if (raintime - rainlast > 10) // ignore switch-bounce glitches less than 10mS after initial edge
@@ -280,15 +314,18 @@ void wspeedIRQ()
   }
 }
 
-void logData(char logs[250]){
+int logData(char logs[500]) {
   uint16_t statuscode;
   int16_t length;
   char url[80] = "weather-stationgh.herokuapp.com/publish";
-  if(!fona.HTTP_POST_start(url, F("application/json"), (uint8_t *) logs, strlen(logs), &statuscode, (uint16_t *)&length)){
+  if (!fona.HTTP_POST_start(url, F("application/json"), (uint8_t *) logs, strlen(logs), &statuscode, (uint16_t *)&length)) {
     Serial.print("post status:\t");
   }
-  Serial.println(statuscode);
+  return (statuscode);
   fona.HTTP_POST_end();
-  
+
+}
+void save_error() {
+
 }
 
