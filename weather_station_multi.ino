@@ -1,6 +1,8 @@
+#include <Adafruit_FONA.h>
 #include <Wire.h> //I2C needed for sensors
 #include "SparkFunMPL3115A2.h" //Pressure sensor - Search "SparkFun MPL3115" and install from Library Manager
 #include "SparkFunHTU21D.h" //Humidity sensor - Search "SparkFun HTU21D" and install from Library Manager
+
 MPL3115A2 myPressure; //Create an instance of the pressure sensor
 HTU21D myHumidity; //Create an instance of the humidity sensor
 #include <ArduinoJson.h>
@@ -25,10 +27,15 @@ volatile unsigned long lastWindCheck = 0;
 volatile float dailyrainin = 0, thisrainin = 0;
 volatile int wind_clicks = 0;
 
-float lightRead = 0, speedRead = 0, pressRead = 0, humRead = 0, tempRead = 0;
+float lightRead = 0, speedRead = 0, pressRead = 0, humRead = 0, tempRead = 0, wind_speed = 0;
 int dirRead = 0, iterations = 0;
 
+#define FONA_RX 19
+#define FONA_TX 18
+#define FONA_RST 4
 
+HardwareSerial *fonaSerial = &Serial1;
+Adafruit_FONA fona = Adafruit_FONA(FONA_RST);
 
 // SD Library
 #include <SPI.h>
@@ -41,17 +48,17 @@ const int fileLed = 48;
 File myFile;
 
 void setup() {
+  uint8_t myState = HIGH;
   Serial.begin(115200);
   Serial.print("Initializing Weather Shield:\t");
   pinMode(LIGHT, INPUT);
   pinMode(SS, OUTPUT);
   pinMode(fileLed, OUTPUT);
   pinMode(RAIN, INPUT_PULLUP);
-  pinMode(WSPEED, INPUT_PULLUP
-  
-  attachInterrupt(0, rainIRQ, FALLING);
-  attachInterrupt(1, wspeedIRQ, FALLING);
-  
+  pinMode(WSPEED, INPUT_PULLUP);
+
+
+
   myPressure.begin();
   myPressure.setModeBarometer();
   myPressure.setOversampleRate(7);
@@ -65,7 +72,37 @@ void setup() {
     return;
   }
   Serial.println("success!");
-
+  fonaSerial->begin(4800);
+  if (! fona.begin(*fonaSerial)) {
+    Serial.println(F("Couldn't find FONA"));
+    while (1) {
+      digitalWrite(fileLed, myState);
+      myState = !myState;
+      delay(100);
+    }
+  }
+  fona.setGPRSNetworkSettings(F("internet"), F(""), F(""));
+  fona.setHTTPSRedirect(true);
+  delay(1000);
+  Serial.println("\n\nGSM Shield online!");
+  while (!fona.enableGPRS(true));
+  Serial.println("\n\nGPRS Enabled");
+  delay(100);
+  while (!fona.enableGPS(true));
+  Serial.println(F("GPS Enabled"));
+  if (!fona.enableNetworkTimeSync(true)){
+      Serial.println("\n\nNetwork time sync:\tfail");
+    }
+    Serial.println("Network time sync:\tenabled");
+    if (!fona.enableNTPTimeSync(true, F("pool.ntp.org"))){
+            Serial.println(F("\n\nNTP time sync:\tfail"));
+    }
+    Serial.println("NTP time sync:\tenabled");
+    delay(100);
+  
+  attachInterrupt(0, rainIRQ, FALLING);
+  attachInterrupt(1, wspeedIRQ, FALLING);
+  previousMillis = postMillis = millis();
 }
 
 void loop() {
@@ -95,6 +132,7 @@ void loop() {
       dirRead += get_wind_direction();
       pressRead += myPressure.readPressure();
       tempRead += myHumidity.readTemperature();
+      wind_speed += get_wind_speed();
       digitalWrite(fileLed, LOW);
       //      Number of turns
       iterations += 1;
@@ -106,7 +144,7 @@ void loop() {
     char output[300] = "";
     root.set<float>("light", float(lightRead) / iterations); // Light
     root.set<int>("wind_dir", dirRead / iterations); // Wind Direction
-    //    root.set<float>("wind_spd", 0.00);  // Wind Speed
+    root.set<float>("wind_spd", float(wind_speed) / iterations); // Wind Speed
     root.set<float>("pressure", float(pressRead) / iterations);  // pressure
     root.set<float>("temperature", float(tempRead) / iterations);    // temperature
     root.set<float>("totalrain", float(dailyrainin));      // total rainfall
@@ -115,7 +153,7 @@ void loop() {
     root.set<float>("battery", get_battery_level());
     root.printTo(output);
     Serial.println(output);
-    
+
     Serial.print("write_to_file:\t");
     digitalWrite(fileLed, HIGH);
     myFile = SD.open("hive00.log", FILE_WRITE);
@@ -128,7 +166,7 @@ void loop() {
       Serial.println("error!");
     }
     //    Reset values
-    lightRead = humRead = dirRead = pressRead = tempRead = iterations =thisrainin= 0;
+    lightRead = humRead = dirRead = pressRead = tempRead = iterations = thisrainin = 0;
     postMillis = currentMillis;
   }
 
@@ -180,6 +218,7 @@ int get_wind_direction()
   else return (-1); // error, disconnected?
 }
 
+// Battery Level
 float get_battery_level()
 {
   float operatingVoltage = analogRead(REFERENCE_3V3);
@@ -195,6 +234,19 @@ float get_battery_level()
   return (rawVoltage);
 }
 
+// Wind speed
+float get_wind_speed() {
+  volatile float deltaTime = millis() - lastWindCheck;
+  deltaTime /= 1000.0;
+
+  volatile float  windSpeed = (float)wind_clicks / deltaTime;
+  wind_clicks = 0; // Reset and start watching for new wind
+  lastWindCheck = millis();
+
+  windSpeed *= 1.492;
+
+  return (windSpeed);
+}
 
 
 
@@ -203,10 +255,10 @@ float get_battery_level()
 
 // Interrupt Handlers
 
-void rainIRQ()
+void rainIRQ(){
 // Count rain gauge bucket tips as they occur
 // Activated by the magnet and reed switch in the rain gauge, attached to input D2
-{
+
   volatile unsigned long raintime = millis(); // grab current time
   if (raintime - rainlast > 10) // ignore switch-bounce glitches less than 10mS after initial edge
   {
@@ -224,7 +276,19 @@ void wspeedIRQ()
   if (millis() - lastWindIRQ > 10) // Ignore switch-bounce glitches less than 10ms (142MPH max reading) after the reed switch closes
   {
     lastWindIRQ = millis(); //Grab the current time
-    windClicks++; //There is 1.492MPH for each click per second.
+    wind_clicks++; //There is 1.492MPH for each click per second.
   }
+}
+
+void logData(char logs[250]){
+  uint16_t statuscode;
+  int16_t length;
+  char url[80] = "weather-stationgh.herokuapp.com/publish";
+  if(!fona.HTTP_POST_start(url, F("application/json"), (uint8_t *) logs, strlen(logs), &statuscode, (uint16_t *)&length)){
+    Serial.print("post status:\t");
+  }
+  Serial.println(statuscode);
+  fona.HTTP_POST_end();
+  
 }
 
