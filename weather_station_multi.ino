@@ -118,6 +118,32 @@ void loop() {
   while (trick) {
     gsmloc_success = fona.getGSMLoc(&latitude, &longitude);
     trick = false;
+
+// Or do this
+    /*
+     * float latitude, longitude, speed_kph, heading, speed_mph, altitude;
+
+  // if you ask for an altitude reading, getGPS will return false if there isn't a 3D fix
+  boolean gps_success = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
+
+  if (gps_success) {
+
+    Serial.print("GPS lat:");
+    Serial.println(latitude, 6);
+    Serial.print("GPS long:");
+    Serial.println(longitude, 6);
+    Serial.print("GPS speed KPH:");
+    Serial.println(speed_kph);
+    Serial.print("GPS speed MPH:");
+    speed_mph = speed_kph * 0.621371192;
+    Serial.println(speed_mph);
+    Serial.print("GPS heading:");
+    Serial.println(heading);
+    Serial.print("GPS altitude:");
+    Serial.println(altitude);
+
+  }
+     */
   }
   unsigned long currentMillis = millis();
   StaticJsonBuffer<200> jsonBuffer;
