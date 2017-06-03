@@ -17,21 +17,24 @@ const byte WDIR = A0;
 const byte RAIN = 2;
 const byte WSPEED = 3;
 const long interval = 1000;
-const long postInterval = 120000;
+const long postInterval = 300000;
+const long errInterval = 30000;
 
 unsigned long previousMillis = 0;
 unsigned long postMillis = 0;
+unsigned long errMillis = 0;
 volatile unsigned long rainlast = 0;
 volatile unsigned long lastWindIRQ = 0;
 volatile unsigned long lastWindCheck = 0;
 volatile float dailyrainin = 0, thisrainin = 0;
 volatile int wind_clicks = 0;
 
+float latitude, longitude;
 float lightRead = 0, speedRead = 0, pressRead = 0, humRead = 0, tempRead = 0, wind_speed = 0;
 int dirRead = 0, iterations = 0;
-
-#define FONA_RX 19
-#define FONA_TX 18
+char time_buffer[23];
+//#define FONA_RX 19
+//#define FONA_TX 18
 #define FONA_RST 4
 
 HardwareSerial *fonaSerial = &Serial1;
@@ -46,7 +49,8 @@ const int fileLed = 48;
 
 // Create an instance of File
 File myFile;
-bool is_log_error = false;
+boolean is_log_error = false, trick = true;
+boolean gsmloc_success = false;
 void setup() {
   uint8_t myState = HIGH;
   Serial.begin(115200);
@@ -69,7 +73,7 @@ void setup() {
 
   if (!SD.begin(chipSelect)) {
     Serial.println("failed!");
-    return;
+    while (1);
   }
   Serial.println("success!");
   fonaSerial->begin(4800);
@@ -81,12 +85,18 @@ void setup() {
       delay(100);
     }
   }
+  Serial.println("\n\nGSM Shield online!");
   fona.setGPRSNetworkSettings(F("internet"), F(""), F(""));
   fona.setHTTPSRedirect(true);
   delay(1000);
-  Serial.println("\n\nGSM Shield online!");
-  while (!fona.enableGPRS(true));
-  Serial.println("\n\nGPRS Enabled");
+  
+  
+  
+    while (!fona.enableGPRS(true));
+    Serial.println("\n\nGPRS enabled");
+    
+  
+
   delay(100);
   while (!fona.enableGPS(true));
   Serial.println(F("GPS Enabled"));
@@ -97,15 +107,21 @@ void setup() {
   if (!fona.enableNTPTimeSync(true, F("pool.ntp.org"))) {
     Serial.println(F("\n\nNTP time sync:\tfail"));
   }
+  fona.getTime(time_buffer, 23);
   Serial.println("NTP time sync:\tenabled");
   delay(100);
 
   attachInterrupt(0, rainIRQ, FALLING);
   attachInterrupt(1, wspeedIRQ, FALLING);
-  previousMillis = postMillis = millis();
+  errMillis = previousMillis = postMillis = millis();
 }
 
 void loop() {
+
+  while (trick) {
+    gsmloc_success = fona.getGSMLoc(&latitude, &longitude);
+    trick = false;
+  }
   unsigned long currentMillis = millis();
   StaticJsonBuffer<200> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
@@ -126,6 +142,8 @@ void loop() {
       myPressure.enableEventFlags();
       myHumidity.begin();
     } else {
+
+
       //      Cummulative addition of readings per turn
       lightRead += get_light_level();
       humRead += humidity;
@@ -133,6 +151,7 @@ void loop() {
       pressRead += myPressure.readPressure();
       tempRead += myHumidity.readTemperature();
       wind_speed += get_wind_speed();
+
       digitalWrite(fileLed, LOW);
       //      Number of turns
       iterations += 1;
@@ -141,7 +160,12 @@ void loop() {
       previousMillis = currentMillis;
     }
   } else if (currentMillis - postMillis >= postInterval) {
+
     char output[500] = "";
+    uint16_t vbat;
+
+
+
     root.set<float>("light", float(lightRead) / iterations); // Light
     root.set<int>("wind_dir", dirRead / iterations); // Wind Direction
     root.set<float>("wind_spd", float(wind_speed) / iterations); // Wind Speed
@@ -150,7 +174,17 @@ void loop() {
     root.set<float>("totalrain", float(dailyrainin));      // total rainfall
     root.set<float>("lastrain", float(thisrainin));      // rainfall
     root.set<float>("humidity", float(humRead) / iterations);    // humidity
-    root.set<float>("battery", get_battery_level());
+    if (! fona.getBattPercent(&vbat)) {
+          Serial.println(F("Failed to read Batt"));
+        } else {
+          root.set<float>("battery", vbat);
+        }
+    root.set<char>("time", time_buffer);
+
+    if (gsmloc_success) {
+      root.set<float>("latitude", latitude);
+      root.set<float>("longitude", longitude);
+    }
     root.printTo(output);
     Serial.println(output);
 
@@ -176,9 +210,7 @@ void loop() {
     lightRead = humRead = dirRead = pressRead = tempRead = iterations = thisrainin = 0;
     postMillis = currentMillis;
   }
-  if (is_log_error) {
-    // Do Something here.. leave blank for now
-    char err_data[5000] = "";
+  if (is_log_error && (currentMillis - errMillis >= errInterval)) {
     String trick_data = "";
     int logStatus;
     myFile = SD.open("hive00_error.log");
@@ -186,14 +218,13 @@ void loop() {
       while (myFile.available()) {
         trick_data += myFile.read();
       }
-      trick_data.toCharArray(err_data, 5000);
       myFile.close();
-      logStatus = logData(err_data);
+      log_error(trick_data);
     }
     Serial.print("rewrite_to_file:\t");
     myFile = SD.open("hive00.log", FILE_WRITE);
     if (myFile) {
-      myFile.println(err_data);
+      myFile.println(trick_data);
       myFile.close();
       Serial.println("success!");
 
@@ -201,6 +232,8 @@ void loop() {
       Serial.println("error!");
     }
     SD.remove("hive00_error.log");
+    is_log_error = false;
+    errMillis = currentMillis;
 
   }
 
@@ -320,12 +353,22 @@ int logData(char logs[500]) {
   char url[80] = "weather-stationgh.herokuapp.com/publish";
   if (!fona.HTTP_POST_start(url, F("application/json"), (uint8_t *) logs, strlen(logs), &statuscode, (uint16_t *)&length)) {
     Serial.print("post status:\t");
+    Serial.println(statuscode);
   }
   return (statuscode);
   fona.HTTP_POST_end();
 
 }
-void save_error() {
-
+void log_error(String input) {
+  char logs[5000];
+  input.toCharArray(logs, 5000);
+  uint16_t statuscode;
+  int16_t length;
+  char url[80] = "weather-stationgh.herokuapp.com/publish_unlogged";
+  if (!fona.HTTP_POST_start(url, F("text/plain"), (uint8_t *) logs, strlen(logs), &statuscode, (uint16_t *)&length)) {
+    Serial.print("post status:\t");
+  }
+  Serial.println(statuscode);
+  fona.HTTP_POST_end();
 }
 
