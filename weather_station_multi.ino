@@ -33,8 +33,6 @@ float latitude, longitude;
 float lightRead = 0, speedRead = 0, pressRead = 0, humRead = 0, tempRead = 0, wind_speed = 0;
 int dirRead = 0, iterations = 0;
 char time_buffer[23];
-//#define FONA_RX 19
-//#define FONA_TX 18
 #define FONA_RST 4
 
 HardwareSerial *fonaSerial = &Serial1;
@@ -89,13 +87,13 @@ void setup() {
   fona.setGPRSNetworkSettings(F("internet"), F(""), F(""));
   fona.setHTTPSRedirect(true);
   delay(1000);
-  
-  
-  
-    while (!fona.enableGPRS(true));
-    Serial.println("\n\nGPRS enabled");
-    
-  
+
+
+
+  while (!fona.enableGPRS(true));
+  Serial.println("\n\nGPRS enabled");
+
+
 
   delay(100);
   while (!fona.enableGPS(true));
@@ -107,7 +105,6 @@ void setup() {
   if (!fona.enableNTPTimeSync(true, F("pool.ntp.org"))) {
     Serial.println(F("\n\nNTP time sync:\tfail"));
   }
-  fona.getTime(time_buffer, 23);
   Serial.println("NTP time sync:\tenabled");
   delay(100);
 
@@ -166,6 +163,7 @@ void loop() {
 
 
 
+    fona.getTime(time_buffer, 23);
     root.set<float>("light", float(lightRead) / iterations); // Light
     root.set<int>("wind_dir", dirRead / iterations); // Wind Direction
     root.set<float>("wind_spd", float(wind_speed) / iterations); // Wind Speed
@@ -175,10 +173,10 @@ void loop() {
     root.set<float>("lastrain", float(thisrainin));      // rainfall
     root.set<float>("humidity", float(humRead) / iterations);    // humidity
     if (! fona.getBattPercent(&vbat)) {
-          Serial.println(F("Failed to read Batt"));
-        } else {
-          root.set<float>("battery", vbat);
-        }
+      Serial.println(F("Failed to read Batt"));
+    } else {
+      root.set<float>("battery", vbat);
+    }
     root.set<char>("time", time_buffer);
 
     if (gsmloc_success) {
